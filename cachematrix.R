@@ -1,5 +1,5 @@
 ## This function creates a special Matrix object
-## that caches the results so the next lookup
+## that cacn cache its inversed value so the next lookup
 ## of the same matrix will not "calculate" but use
 ## the cached value
 makeCacheMatrix <- function(x = matrix()) {
