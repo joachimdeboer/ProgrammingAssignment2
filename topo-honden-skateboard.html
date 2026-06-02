@@ -227,25 +227,66 @@ function loadPositions(){
 function savePositions(){localStorage.setItem(LS_POS,JSON.stringify(places));}
 function resetPositions(){places=DEFAULTS.map(p=>({...p}));savePositions();renderHotspots();}
 
-/* ===== image handling ===== */
-function setImage(dataUrl){
-  localStorage.setItem(LS_IMG,dataUrl);
-  $("mapimg").src=dataUrl;
-  $("mapimg").classList.remove("hidden");
-  $("noimg").classList.add("hidden");
+/* ===== image handling (downscale + IndexedDB, met localStorage-terugval) ===== */
+let hasImage=false;
+const startButtonsHTML=
+  '<button class="btn green" onclick="startMode(\'learn\')">📖 Leren</button>'+
+  '<button class="btn pink" onclick="startMode(\'play\')">🎮 Steden</button>'+
+  '<button class="btn yellow" onclick="startMode(\'play-prov\')">🗺️ Provincies</button>'+
+  '<button class="btn white" onclick="startMode(\'play-all\')">🏆 Alles</button>';
+
+/* --- IndexedDB mini-helper (ruime opslag voor de foto) --- */
+const DB_NAME="topoDB", STORE="img";
+function idbOpen(){return new Promise((res,rej)=>{
+  let r;try{r=indexedDB.open(DB_NAME,1);}catch(e){return rej(e);}
+  r.onupgradeneeded=()=>r.result.createObjectStore(STORE);
+  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);});}
+function idbSet(k,v){return idbOpen().then(db=>new Promise((res,rej)=>{
+  const tx=db.transaction(STORE,"readwrite");tx.objectStore(STORE).put(v,k);
+  tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);}));}
+function idbGet(k){return idbOpen().then(db=>new Promise((res,rej)=>{
+  const tx=db.transaction(STORE,"readonly");const rq=tx.objectStore(STORE).get(k);
+  rq.onsuccess=()=>res(rq.result);rq.onerror=()=>rej(rq.error);}));}
+
+function showImageSrc(src){
+  $("mapimg").src=src;$("mapimg").classList.remove("hidden");$("noimg").classList.add("hidden");
+  hasImage=true;
 }
+function afterImageSet(){
+  $("startText").innerHTML="Top! De kaart is ingesteld. 🐶 Kies nu een spel:";
+  $("startButtons").innerHTML=startButtonsHTML;
+}
+function blobToDataURL(blob){return new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(blob);});}
+
 function handleFile(file){
   if(!file)return;
-  const r=new FileReader();
-  r.onload=e=>{ setImage(e.target.result);
-    $("startText").innerHTML="Top! De kaart is ingesteld. 🐶 Kies nu een spel:";
-    $("startButtons").innerHTML=
-      '<button class="btn green" onclick="startMode(\'learn\')">📖 Leren</button>'+
-      '<button class="btn pink" onclick="startMode(\'play\')">🎮 Steden</button>'+
-      '<button class="btn yellow" onclick="startMode(\'play-prov\')">🗺️ Provincies</button>'+
-      '<button class="btn white" onclick="startMode(\'play-all\')">🏆 Alles</button>';
+  const url=URL.createObjectURL(file);
+  const img=new Image();
+  img.onload=()=>{
+    const MAX=1800;
+    let w=img.naturalWidth, h=img.naturalHeight;
+    const scale=Math.min(1, MAX/Math.max(w,h));
+    w=Math.round(w*scale); h=Math.round(h*scale);
+    const c=document.createElement("canvas");c.width=w;c.height=h;
+    c.getContext("2d").drawImage(img,0,0,w,h);
+    URL.revokeObjectURL(url);
+    c.toBlob(async blob=>{
+      if(!blob){ // hele oude browser zonder toBlob: gebruik originele bestand
+        showImageSrc(URL.createObjectURL(file)); afterImageSet(); return;
+      }
+      showImageSrc(URL.createObjectURL(blob));
+      afterImageSet();
+      // proberen te bewaren zodat het de volgende keer onthouden wordt
+      try{ await idbSet("map",blob); }
+      catch(e){
+        try{ localStorage.setItem(LS_IMG, await blobToDataURL(blob)); }
+        catch(e2){ console.warn("Foto kon niet bewaard worden:",e2);
+          setFeedback("",""); /* niet erg: werkt deze keer wel */ }
+      }
+    },"image/jpeg",0.82);
   };
-  r.readAsDataURL(file);
+  img.onerror=()=>{URL.revokeObjectURL(url);alert("Kon deze afbeelding niet laden. Probeer een andere foto (jpg of png).");};
+  img.src=url;
 }
 $("fileInput").addEventListener("change",e=>handleFile(e.target.files[0]));
 $("fileInput2").addEventListener("change",e=>handleFile(e.target.files[0]));
@@ -308,7 +349,7 @@ function updateTags(){
 /* ===== game flow ===== */
 function backToMenu(){location.reload();}
 function startMode(m){
-  if(!localStorage.getItem(LS_IMG) && !$("mapimg").src){ alert("Kies eerst de kaart-foto met de knop 📷"); return; }
+  if(!hasImage){ alert("Kies eerst de kaart-foto met de knop 📷"); return; }
   editing=false;$("stage").classList.remove("editing");$("editHelp").classList.add("hidden");$("editBtn").textContent="✏️ Aanpassen";
   mode=m; $("startScreen").classList.add("hidden");$("winScreen").classList.add("hidden");
   clearReveals();setFeedback("");hintUsed=false;locked=false;
@@ -422,18 +463,19 @@ function shuffle(a){for(let i=a.length-1;i>0;i--){const j=(Math.random()*(i+1))|
 function pick(a){return a[(Math.random()*a.length)|0];}
 
 /* ===== init ===== */
-(function init(){
-  const img=localStorage.getItem(LS_IMG);
-  if(img){ $("mapimg").src=img;$("mapimg").classList.remove("hidden");$("noimg").classList.add("hidden");
-    $("startText").innerHTML="Welkom terug! 🐶 Kies een spel:";
-    $("startButtons").innerHTML=
-      '<button class="btn green" onclick="startMode(\'learn\')">📖 Leren</button>'+
-      '<button class="btn pink" onclick="startMode(\'play\')">🎮 Steden</button>'+
-      '<button class="btn yellow" onclick="startMode(\'play-prov\')">🗺️ Provincies</button>'+
-      '<button class="btn white" onclick="startMode(\'play-all\')">🏆 Alles</button>';
-  }
+async function init(){
   renderHotspots(); updateScore();
-})();
+  // foto terughalen: eerst IndexedDB, anders oude localStorage
+  let restored=false;
+  try{ const blob=await idbGet("map");
+    if(blob){ showImageSrc(URL.createObjectURL(blob)); restored=true; } }catch(e){}
+  if(!restored){ try{ const d=localStorage.getItem(LS_IMG); if(d){ showImageSrc(d); restored=true; } }catch(e){} }
+  if(restored){
+    $("startText").innerHTML="Welkom terug! 🐶 Kies een spel:";
+    $("startButtons").innerHTML=startButtonsHTML;
+  }
+}
+init();
 </script>
 </body>
 </html>
